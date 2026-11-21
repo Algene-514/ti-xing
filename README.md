@@ -4,6 +4,10 @@
 
 > 到点锁屏，逼你答几道到期的题，答完立刻还你电脑。
 
+<p align="center">
+  <img src="docs/screenshot-main.png" alt="主窗口：题库列表、题目详情与状态栏" width="100%" />
+</p>
+
 桌面常驻的间隔重复复习工具。它不是又一个 Anki，也不打算做学习平台——**只做一件事：按记忆曲线，在你最需要的那 3 秒里出现，答完就走。**
 
 ```
@@ -41,6 +45,11 @@
 | `1` / `2` / `3` | 不会 / 模糊 / 答对 |
 | `Esc` | 跳过（记录为「不想学」，`rating = 0`） |
 | `S` | 稍后 10 分钟（记录为「不方便」，`rating = −1`） |
+
+<p align="center">
+  <img src="docs/screenshot-quiz-question.png" alt="复习弹窗：题面" width="49%" />
+  <img src="docs/screenshot-quiz-answer.png" alt="复习弹窗：空格显示答案后自评" width="49%" />
+</p>
 
 ## 快速开始
 
