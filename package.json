@@ -1,0 +1,70 @@
+{
+  "name": "ti-xing",
+  "version": "1.1.1",
+  "description": "题醒 - 到点锁屏复习",
+  "main": "./out/main/index.js",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev -- --no-sandbox",
+    "build": "electron-vite build",
+    "start": "electron-vite preview -- --no-sandbox",
+    "typecheck": "tsc --noEmit",
+    "test:srs": "node test/srs.test.ts",
+    "test:dnd": "node test/dnd.test.ts",
+    "test:core": "node scripts/test-core.mjs",
+    "test": "npm run test:srs && npm run test:dnd && npm run test:core",
+    "gen:icon": "node scripts/gen-icon.mjs",
+    "rebuild": "electron-rebuild -f -w better-sqlite3"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0"
+  },
+  "overrides": {
+    "@electron/node-gyp": "10.2.0-electron.2"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  },
+  "build": {
+    "appId": "com.tixing.app",
+    "productName": "tixing",
+    "npmRebuild": false,
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "resources/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "win": {
+      "target": ["nsis"],
+      "executableName": "tixing",
+      "icon": "build/icon.png",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "题醒",
+      "artifactName": "tixing-setup-${version}.exe"
+    }
+  }
+}

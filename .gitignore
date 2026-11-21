@@ -1,0 +1,29 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+dist-*/
+out/
+release/
+
+# 临时与缓存
+tmp/
+.cache/
+*.log
+
+# 用户数据 / 本地数据库（含个人题目，别泄露）
+.userdata/
+*.sqlite
+*.sqlite-journal
+*.db
+
+# 密钥（BYOK 的 API Key 千万别提交）
+.env
+.env.local
+*.key
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
