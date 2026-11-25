@@ -77,7 +77,7 @@ npm run dev
 
 ### 安装包
 
-用 [electron-builder](https://www.electron.build/) 打包 NSIS 安装包（约 80 MB），见下方「打包」。暂未发布 Releases，可自行构建。
+从 [Releases](https://github.com/Algene-514/ti-xing/releases/latest) 下载 `tixing-setup-1.2.0.exe` 双击安装（建议安装在英文路径）。自行构建见下方「打包」。
 
 ## 使用方式
 
