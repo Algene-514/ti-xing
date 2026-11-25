@@ -5,9 +5,11 @@ import type {
   QuestionInput,
   QuestionRow,
   QuestionView,
-  Settings
+  Settings,
+  TagInfo
 } from '../shared/types'
-import { compareByR, matchFilter, toView } from '../shared/derive'
+import { TAG_MAX_LEN } from '../shared/types'
+import { compareByR, startOfToday, toView } from '../shared/derive'
 import { localDateKey } from '../shared/dnd'
 import { calculateNextReview, R_NEW, type Rating } from '../shared/srs'
 import { parseMarkdown } from '../shared/md'
@@ -33,9 +35,17 @@ export class DuplicateQuestionError extends Error {
   }
 }
 
+/** 标签名截断到 TAG_MAX_LEN 个字符（按 Unicode 字符计数，避免把 emoji 拆坏） */
+function truncateTag(raw: string): string {
+  const chars = Array.from(raw.trim())
+  return chars.length > TAG_MAX_LEN ? chars.slice(0, TAG_MAX_LEN).join('') : raw.trim()
+}
+
 export class Store {
   readonly path: string
   private db: Database.Database
+  /** user_version >= 2：标签表可用。备份失败导致迁移中止时为 false（v1.2 §4） */
+  private v2Ready: boolean
 
   constructor(path: string) {
     this.path = path
@@ -44,6 +54,7 @@ export class Store {
     this.db.pragma('busy_timeout = 5000') // 单实例降级为双开时的兜底：并发写排队 5 秒，而不是直接 SQLITE_BUSY
     this.db.pragma('foreign_keys = ON') // better-sqlite3 默认关闭，不开级联等于没写
     this.migrate()
+    this.v2Ready = this.getUserVersion() >= 2
   }
 
   inner(): Database.Database {
@@ -86,6 +97,38 @@ export class Store {
       CREATE TABLE IF NOT EXISTS setting (k TEXT PRIMARY KEY, v TEXT);
     `)
     this.db.pragma('user_version = 1')
+  }
+
+  // ---------- 迁移（v1.2 §4） ----------
+
+  /** 当前 PRAGMA user_version */
+  getUserVersion(): number {
+    return this.db.pragma('user_version', { simple: true }) as number
+  }
+
+  /**
+   * v1 → v2：只建 tag / question_tag 表与索引。
+   * 调用方（主进程 bootstrap）必须先成功备份、再调用本方法；备份失败不得调用。
+   * 事务失败会整体回滚，user_version 保持 1。
+   */
+  migrateToV2(): void {
+    const tx = this.db.transaction(() => {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tag (
+          id   INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE COLLATE NOCASE
+        );
+        CREATE TABLE IF NOT EXISTS question_tag (
+          question_id INTEGER NOT NULL REFERENCES question(id) ON DELETE CASCADE,
+          tag_id      INTEGER NOT NULL REFERENCES tag(id)      ON DELETE CASCADE,
+          PRIMARY KEY (question_id, tag_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_qt_tag ON question_tag(tag_id);
+      `)
+      this.db.pragma('user_version = 2')
+    })
+    tx()
+    this.v2Ready = true
   }
 
   // ---------- 设置 ----------
@@ -145,32 +188,136 @@ export class Store {
     return row ?? null
   }
 
-  list(filter: 'all' | 'today' | 'overdue', q: string, now: number): QuestionView[] {
-    const needle = q.trim().toLowerCase()
-    let views = this.rawRows().map((r) => toView(r, now))
-    if (needle) {
-      views = views.filter(
-        (v) =>
-          v.content.toLowerCase().includes(needle) ||
-          (v.answer ?? '').toLowerCase().includes(needle) ||
-          (v.analysis ?? '').toLowerCase().includes(needle)
+  /** 单题视图（带标签），供 db:get 使用 */
+  getView(id: number, now: number): QuestionView | null {
+    const row = this.getRow(id)
+    if (!row) return null
+    const view = toView(row, now)
+    this.fillTags([view])
+    return view
+  }
+
+  // ---------- 标签（v1.2） ----------
+
+  /** 全部标签（只含至少关联一道题的，避免筛选下拉出现空标签） */
+  getTags(): TagInfo[] {
+    if (!this.v2Ready) return []
+    return this.db
+      .prepare(
+        `SELECT t.id AS id, t.name AS name, COUNT(qt.question_id) AS count
+           FROM tag t JOIN question_tag qt ON qt.tag_id = t.id
+          GROUP BY t.id
+          ORDER BY t.name COLLATE NOCASE`
       )
+      .all() as TagInfo[]
+  }
+
+  /**
+   * 替换一道题的标签集合：先清空关联再插入（标签表本身不删，孤立的 tag 行不参与筛选）。
+   * 名字先 trim、去空、截断到 TAG_MAX_LEN、按 NOCASE 去重。
+   */
+  private setQuestionTags(questionId: number, names?: string[]): void {
+    if (!this.v2Ready) return // 升级未完成（备份失败）时降级：忽略标签写入，不阻塞录题
+    const clean: string[] = []
+    const seen = new Set<string>()
+    for (const raw of names ?? []) {
+      const name = truncateTag(raw)
+      if (!name) continue
+      const key = name.toLowerCase() // 与 UNIQUE COLLATE NOCASE 对齐
+      if (seen.has(key)) continue
+      seen.add(key)
+      clean.push(name)
     }
-    views = views.filter((v) => matchFilter(v, filter))
+    this.db.prepare('DELETE FROM question_tag WHERE question_id = ?').run(questionId)
+    const insTag = this.db.prepare('INSERT OR IGNORE INTO tag (name) VALUES (?)')
+    const selTag = this.db.prepare('SELECT id FROM tag WHERE name = ?')
+    const insQT = this.db.prepare('INSERT OR IGNORE INTO question_tag (question_id, tag_id) VALUES (?, ?)')
+    for (const name of clean) {
+      insTag.run(name)
+      const tag = selTag.get(name) as { id: number } | undefined
+      if (tag) insQT.run(questionId, tag.id)
+    }
+  }
+
+  /** 给一批视图补上 tags（一次查询全表关联，避免 IN 参数上限） */
+  private fillTags(views: QuestionView[]): void {
+    if (!this.v2Ready || views.length === 0) return
+    const rows = this.db
+      .prepare(
+        `SELECT qt.question_id AS qid, t.name AS name
+           FROM question_tag qt JOIN tag t ON t.id = qt.tag_id
+          ORDER BY t.name COLLATE NOCASE`
+      )
+      .all() as { qid: number; name: string }[]
+    const byId = new Map<number, string[]>()
+    for (const r of rows) {
+      const arr = byId.get(r.qid)
+      if (arr) arr.push(r.name)
+      else byId.set(r.qid, [r.name])
+    }
+    for (const v of views) v.tags = byId.get(v.id) ?? []
+  }
+
+  // ---------- 列表（v1.2：LIKE 搜索 + 标签筛选，SQL 过滤后内存按 R 排序） ----------
+
+  list(filter: 'all' | 'today' | 'overdue', q: string, now: number, tag?: string | null): QuestionView[] {
+    const where: string[] = []
+    const params: (string | number)[] = []
+
+    if (filter === 'today') {
+      where.push('n > 0 AND next_due IS NOT NULL AND next_due <= ?')
+      params.push(now)
+    } else if (filter === 'overdue') {
+      where.push('n > 0 AND next_due IS NOT NULL AND next_due < ?')
+      params.push(startOfToday(now))
+    }
+
+    if (tag) {
+      where.push(
+        `EXISTS (SELECT 1 FROM question_tag qt JOIN tag t ON t.id = qt.tag_id
+                  WHERE qt.question_id = question.id AND t.name = ? COLLATE NOCASE)`
+      )
+      params.push(tag)
+    }
+
+    // v1.2 §3.2：空格分隔多个词，每个词都要命中至少一个字段（AND）；% 与 _ 按字面匹配
+    const words = q.trim().split(/\s+/).filter(Boolean)
+    for (const word of words) {
+      const escaped = word.replace(/[\\%_]/g, (m) => '\\' + m)
+      const like = `%${escaped}%`
+      where.push(
+        `(content LIKE ? ESCAPE '\\'
+          OR answer LIKE ? ESCAPE '\\'
+          OR analysis LIKE ? ESCAPE '\\'
+          OR EXISTS (SELECT 1 FROM question_tag qt JOIN tag t ON t.id = qt.tag_id
+                      WHERE qt.question_id = question.id AND t.name LIKE ? ESCAPE '\\'))`
+      )
+      params.push(like, like, like, like)
+    }
+
+    const sql = `SELECT * FROM question ${where.length ? 'WHERE ' + where.join(' AND ') : ''}`
+    const rows = this.db.prepare(sql).all(...params) as QuestionRow[]
+    const views = rows.map((r) => toView(r, now))
+    this.fillTags(views)
     return views.sort(compareByR)
   }
 
   create(input: QuestionInput, now: number): number {
     const content = input.content.trim()
     if (!content) throw new Error('题目不能为空')
-    try {
+    const tx = this.db.transaction(() => {
       const info = this.db
         .prepare(
           `INSERT INTO question (content, answer, analysis, n, s, d, last_reviewed_at, next_due, created_at, updated_at)
            VALUES (?, ?, ?, 0, 1.0, 5.0, NULL, NULL, ?, ?)`
         )
         .run(content, input.answer.trim(), input.analysis.trim(), now, now)
-      return Number(info.lastInsertRowid)
+      const id = Number(info.lastInsertRowid)
+      this.setQuestionTags(id, input.tags)
+      return id
+    })
+    try {
+      return tx()
     } catch (e) {
       if (isUniqueViolation(e)) throw new DuplicateQuestionError()
       throw e
@@ -180,17 +327,21 @@ export class Store {
   update(id: number, input: QuestionInput, now: number): void {
     const content = input.content.trim()
     if (!content) throw new Error('题目不能为空')
-    try {
+    const tx = this.db.transaction(() => {
       this.db
         .prepare('UPDATE question SET content = ?, answer = ?, analysis = ?, updated_at = ? WHERE id = ?')
         .run(content, input.answer.trim(), input.analysis.trim(), now, id)
+      this.setQuestionTags(id, input.tags)
+    })
+    try {
+      tx()
     } catch (e) {
       if (isUniqueViolation(e)) throw new DuplicateQuestionError()
       throw e
     }
   }
 
-  /** 物理删除，日志由 ON DELETE CASCADE 连带删除 */
+  /** 物理删除，日志与标签关联由 ON DELETE CASCADE 连带删除 */
   remove(id: number): void {
     this.db.prepare('DELETE FROM question WHERE id = ?').run(id)
   }

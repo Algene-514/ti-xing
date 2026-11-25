@@ -9,7 +9,8 @@ import type {
   Rating,
   Settings,
   SnoozeState,
-  StatusSnapshot
+  StatusSnapshot,
+  TagInfo
 } from './types'
 
 export interface Ok<T> {
@@ -24,12 +25,15 @@ export type Res<T> = Ok<T> | Err
 
 /** preload 通过 contextBridge 暴露为 window.tixing */
 export interface TixingApi {
-  list(filter: FilterKey, q: string): Promise<Res<QuestionView[]>>
+  /** v1.2：tag 为单选标签筛选（null = 不筛） */
+  list(filter: FilterKey, q: string, tag?: string | null): Promise<Res<QuestionView[]>>
   get(id: number): Promise<Res<QuestionView | null>>
   create(input: QuestionInput): Promise<Res<number>>
   update(id: number, input: QuestionInput): Promise<Res<null>>
   remove(id: number): Promise<Res<null>>
   importFiles(files: ImportFile[]): Promise<Res<ImportResult>>
+  /** v1.2 标签列表（只含有关联题目的标签） */
+  tags(): Promise<Res<TagInfo[]>>
   getSettings(): Promise<Res<Settings>>
   setSettings(patch: Partial<Settings>): Promise<Res<Settings>>
   status(): Promise<Res<StatusSnapshot>>

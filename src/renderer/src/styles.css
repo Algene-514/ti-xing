@@ -236,6 +236,21 @@ button.dnd-btn.on {
   color: #fff;
 }
 
+.tag-filter {
+  margin: 0 12px 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.tag-filter:focus {
+  border-color: var(--primary);
+}
+
 .rows {
   flex: 1;
   overflow-y: auto;
@@ -282,6 +297,28 @@ button.dnd-btn.on {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   padding-left: 2px;
+}
+
+.row-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.tag {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  color: var(--muted);
+  background: #172033;
+  border: 1px solid var(--line);
+}
+
+.tag-more {
+  color: var(--primary);
+  border-color: var(--primary);
 }
 
 .due {
@@ -374,6 +411,21 @@ button.dnd-btn.on {
 }
 
 .form textarea:focus {
+  border-color: var(--primary);
+}
+
+.tag-input {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  outline: none;
+}
+
+.tag-input:focus {
   border-color: var(--primary);
 }
 

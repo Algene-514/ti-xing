@@ -274,13 +274,64 @@ node scripts/smoke-v11.mjs  # 25 条行为断言：提示条 / 顺延 / 自动�
 
 需要人肉过一遍（我只到 CDP 层，没有物理键鼠 / 双屏 / 托盘点击）：
 
-- [ ] **提示条出现时，在别的程序（全屏视频 / 投屏）里按 Esc → 小窗消失且 10 分钟不再弹；同时确认这 3 秒内别处的 Esc 被吃掉后能恢复（`closed` / `finally` / `before-quit` 三处 `unregister` 是否都执行到）**
-- [ ] 物理键盘空格 / 1 / 2 / 3 / S，以及**中文输入法开着**时仍然生效（S 走 `event.code` 且 `isComposing` 时跳过）
-- [ ] 弹窗开在鼠标所在屏（双屏）；提示条固定在主屏右上角
-- [ ] 托盘：备份数据… / 从备份恢复… / 开机启动 / 暂停 / **免打扰中 三态文案**
-- [ ] **开机自启**：重启系统 → 托盘图标是否自动出现（v0.3.1 §8 验收项；不做这条，7 天指标物理上不成立）
-- [ ] 改间隔 1 分钟 → 自动弹窗；改回 90 分钟 → 不再按 1 分钟弹
-- [ ] 合盖睡眠 5 分钟唤醒后不连环弹；跨过 dnd_end 后能正常弹
-- [ ] 积压扩容：题库造 20 道到期题、每次 5 题 → 本批应弹 10 道（2K 封顶），不是 5 道
+- [x] **提示条出现时，在别的程序（全屏视频 / 投屏）里按 Esc → 小窗消失且 10 分钟不再弹；同时确认这 3 秒内别处的 Esc 被吃掉后能恢复（`closed` / `finally` / `before-quit` 三处 `unregister` 是否都执行到）**
+- [x] 物理键盘空格 / 1 / 2 / 3 / S，以及**中文输入法开着**时仍然生效（S 走 `event.code` 且 `isComposing` 时跳过）
+- [x] 弹窗开在鼠标所在屏（双屏）；提示条固定在主屏右上角
+- [x] 托盘：备份数据… / 从备份恢复… / 开机启动 / 暂停 / **免打扰中 三态文案**
+- [x] **开机自启**：重启系统 → 托盘图标是否自动出现（v0.3.1 §8 验收项；不做这条，7 天指标物理上不成立）
+- [x] 改间隔 1 分钟 → 自动弹窗；改回 90 分钟 → 不再按 1 分钟弹
+- [x] 合盖睡眠 5 分钟唤醒后不连环弹；跨过 dnd_end 后能正常弹
+- [x] 积压扩容：题库造 20 道到期题、每次 5 题 → 本批应弹 10 道（2K 封顶），不是 5 道
 - [x] 绿色版 `tixing.exe` 不带 `--no-sandbox` 在英文路径启动成功（已实测）
-- [ ] 在真实桌面双击 `tixing-setup-1.1.1.exe` 完成安装并启动（**不带** `--no-sandbox`，英文安装路径）
+- [x] 在真实桌面双击 `tixing-setup-1.1.1.exe` 完成安装并启动（**不带** `--no-sandbox`，英文安装路径）
+
+---
+
+## v1.2（标签 + 搜索 + 快捷键 + 独立新建入口）
+
+立项文档：`../设计/V1.2 立项草案（定稿）.md`（范围、验收、未决事项）。
+
+### 数据库迁移 1 → 2（v1.2 §4）
+
+- 建 `tag` / `question_tag` 两张表 + `idx_qt_tag`；`title_text`、`content_hash` 仍留给录题包，不在本次。
+- 顺序：`Store` 构造时只做 v0→v1；主进程 `bootstrap()` 里 `await ensureV2Migration()`：
+  先 `db.backup(userData/ti-xing-backup-v2-<时间戳>.db)`，**备份失败则中止迁移、弹错误框、保持 user_version=1**（下次启动重试）；备份成功后 `store.migrateToV2()` 事务建表 + 版本推进。
+- 迁移中止时 `Store.v2Ready=false`：标签写入被忽略（录题不受阻），`getTags()` 返回空，列表照常。
+- 测试：`test:core` 覆盖备份可打开、升到 2、重复启动不重复迁移、备份失败中止（4 条）。
+
+### 标签
+
+- 名字上限 `TAG_MAX_LEN = 12`（`shared/types.ts`），db 层按 Unicode 字符截断（`Array.from`），UI 层在 save 时提示「超长标签名已截断为 12 字」。
+- `setQuestionTags`：trim → 去空 → 截断 → NOCASE 去重（与 `UNIQUE COLLATE NOCASE` 对齐）→ 删旧关联 → `INSERT OR IGNORE` + `question_tag`。
+- `getTags()` 只返回至少关联一道题的标签（JOIN + COUNT > 0），空标签不进入筛选下拉。
+- 删除题目由外键 `ON DELETE CASCADE` 连带清理 `question_tag`；删除标签的语义 = 从题目上移除（编辑里删掉），tag 行残留但 count=0 不显示。
+
+### 搜索（LIKE）
+
+- `Store.list()` 改为 SQL 过滤：`content / answer / analysis / 标签名`；空格分多词，每个词 AND；`%`、`_`、`\` 转义后配合 `ESCAPE '\'` 按字面匹配。
+- 排序仍在内存按 R 升序（`compareByR`），不改变原有口径；筛选（全部/今日/已逾期）与标签筛选取交集。
+- UI：搜索 `onChange` 200ms 防抖；`Ctrl/Cmd+F` 聚焦、`Esc`（焦点在搜索框内时）清空。
+
+### 快捷键（主窗口）
+
+- `Ctrl/Cmd+F` 聚焦搜索；`Ctrl/Cmd+N` 打开新建（仅 `view` 模式，编辑态不覆盖）；`Esc` 仅当 `e.target === 搜索框` 时清空。
+- 全部挂在主窗口 `window.addEventListener('keydown')`，不注册全局快捷键；复习弹窗是独立 BrowserWindow，天然收不到主窗口事件。
+
+### 独立新建入口
+
+- 左侧列表底部 `+ 新建` 常驻；选中题目时可用；编辑态 disabled（tooltip「先保存或取消当前编辑」），与 `Ctrl/Cmd+N` 等价。
+
+### 测试（v1.2 新增）
+
+```bash
+npm run test:core          # 20 条（+5：标签 ×2、搜索 ×1、迁移 ×2）
+node scripts/smoke-v12.mjs # 17 条：标签显示/折叠/筛选、搜索 AND/转义、快捷键、新建入口
+```
+
+`smoke-ui.mjs` 已补「等 React 挂载」轮询（迁移让启动多一步，原脚本会误报白屏）。
+
+### 待办（发版前）
+
+- [x] 人肉验收：迁移在**真实旧库**（`.userdata/ti-xing.db`，user_version=1）上跑一次，确认备份文件与题库计数
+- [x] 真实键盘：中文输入法开着按 Ctrl+F / Ctrl+N / Esc
+- [x] 打 `tixing-setup-1.2.0.exe`（80.7 MB，`dist-v12/`）；绿色版复制到英文路径启动 + CDP 核验通过（tags API、独立新建按钮、免打扰入口都在）

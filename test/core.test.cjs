@@ -1,7 +1,7 @@
 // 核心逻辑端到端测试：真实 SQLite + 真实调度，跑在 Electron 的 Node 环境里（原生模块 ABI 130）
 // 运行：npm run test:core   （内部会设置 ELECTRON_RUN_AS_NODE）
 const assert = require('node:assert/strict')
-const { mkdirSync, mkdtempSync, rmSync } = require('node:fs')
+const { existsSync, mkdirSync, mkdtempSync, rmSync } = require('node:fs')
 const { join } = require('node:path')
 
 // 本机隔离环境的 TEMP 目录不可写（mkdtemp 会 EPERM），所以统一用项目内的 tmp/tests
@@ -282,4 +282,109 @@ test('设置持久化：改题量/间隔后重新打开仍是新值', () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-console.log(`\n全部 ${passed} 条核心断言通过`)
+// ---------- v1.2：标签 / 搜索 / 迁移 ----------
+
+test('v1.2 标签：保存去重、截断 12 字、更新替换、清空后筛选列表消失', () => {
+  const { store, dir } = fresh()
+  store.migrateToV2()
+  const now = Date.now()
+  const id = store.create(
+    { content: '极限', answer: '1', analysis: '', tags: ['高数', '高数', '极限', '超长的标签名超过十二个字符', 'C语言'] },
+    now
+  )
+  const v = store.getView(id, now)
+  assert.deepEqual(v.tags.slice().sort(), ['C语言', '极限', '高数', '超长的标签名超过十二个字'].slice().sort(), `实际: ${v.tags.join(',')}`)
+  assert.equal(store.getTags().length, 4)
+
+  // 更新为两个标签：旧关联被替换
+  store.update(id, { content: '极限', answer: '1', analysis: '', tags: ['高数', '英语'] }, now)
+  assert.deepEqual(store.getView(id, now).tags.slice().sort(), ['英语', '高数'].slice().sort())
+
+  // 清空标签：关联消失、题目保留；count=0 的标签不再出现在筛选列表
+  store.update(id, { content: '极限', answer: '1', analysis: '', tags: [] }, now)
+  assert.deepEqual(store.getView(id, now).tags, [])
+  assert.equal(store.getTags().length, 0)
+  store.close()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('v1.2 标签：按标签单选筛选 + 删除题目级联清理关联', () => {
+  const { store, dir } = fresh()
+  store.migrateToV2()
+  const now = Date.now()
+  const a = store.create({ content: 'A', answer: '', analysis: '', tags: ['高数'] }, now)
+  store.create({ content: 'B', answer: '', analysis: '', tags: ['英语'] }, now)
+  assert.equal(store.list('all', '', now, '高数').length, 1)
+  assert.equal(store.list('all', '', now, null).length, 2)
+  store.remove(a)
+  const orphans = store.inner().prepare('SELECT COUNT(*) c FROM question_tag WHERE question_id = ?').get(a).c
+  assert.equal(orphans, 0)
+  store.close()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('v1.2 搜索：多词 AND、标签名命中、% 与 _ 按字面匹配', () => {
+  const { store, dir } = fresh()
+  store.migrateToV2()
+  const now = Date.now()
+  store.create({ content: '求极限 sinx/x', answer: '1', analysis: '洛必达', tags: ['高数'] }, now)
+  store.create({ content: '英语阅读 T2P3', answer: '', analysis: '', tags: ['英语'] }, now)
+  store.create({ content: 'C语言 指针 100%', answer: '', analysis: '', tags: ['编程'] }, now)
+  store.create({ content: 'a_b 下划线', answer: '', analysis: '', tags: [] }, now)
+  assert.equal(store.list('all', '洛必达', now).length, 1)
+  assert.equal(store.list('all', '极限 洛必达', now).length, 1) // 两个词都命中同一题
+  assert.equal(store.list('all', '极限 英语', now).length, 0) // AND：没有题同时命中
+  assert.equal(store.list('all', '高数', now).length, 1) // 标签名命中
+  assert.equal(store.list('all', '100%', now).length, 1) // % 按字面
+  assert.equal(store.list('all', '%', now).length, 1) // 只有含字面 % 的那道题
+  assert.equal(store.list('all', 'a_b', now).length, 1) // _ 按字面
+  assert.equal(store.list('all', 'aXb', now).length, 0) // _ 不作通配符
+  store.close()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+async function testAsync(name, fn) {
+  try {
+    await fn()
+    passed++
+    console.log(`  ✓ ${name}`)
+  } catch (e) {
+    console.error(`  ✗ ${name}`)
+    throw e
+  }
+}
+
+;(async () => {
+  await testAsync('v1.2 迁移：备份可打开、升到 2、重复启动不重复迁移', async () => {
+    const { store, dir } = fresh()
+    assert.equal(store.getUserVersion(), 1)
+
+    const backupPath = join(dir, 'backup.db')
+    await store.backup(backupPath)
+    assert.ok(existsSync(backupPath), '备份文件应存在')
+    const Bak = require('better-sqlite3')
+    const bak = new Bak(backupPath)
+    assert.equal(bak.prepare('SELECT COUNT(*) c FROM question').get().c, 0)
+    bak.close()
+
+    store.migrateToV2()
+    assert.equal(store.getUserVersion(), 2)
+    store.close()
+
+    const reopened = new Store(join(dir, 't.db'))
+    assert.equal(reopened.getUserVersion(), 2, '重复打开不应回退版本')
+    assert.equal(reopened.getTags().length, 0)
+    reopened.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  await testAsync('v1.2 迁移：备份失败时中止，user_version 保持 1', async () => {
+    const { store, dir } = fresh()
+    await assert.rejects(() => store.backup(join(dir, 'no-such-dir', 'x.db')))
+    assert.equal(store.getUserVersion(), 1)
+    store.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  console.log(`\n全部 ${passed} 条核心断言通过`)
+})()

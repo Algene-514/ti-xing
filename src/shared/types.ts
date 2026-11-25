@@ -26,7 +26,19 @@ export interface QuestionView extends QuestionRow {
   daysOverdue: number
   /** 距到期天数；新题为 null */
   daysToDue: number | null
+  /** v1.2 标签（列表行显示前 3 个，其余折叠为 +N） */
+  tags: string[]
 }
+
+/** v1.2 标签（只包含至少关联一道题的标签） */
+export interface TagInfo {
+  id: number
+  name: string
+  count: number
+}
+
+/** v1.2 标签名上限（字符数，非字节）；db 层截断，UI 层提示 */
+export const TAG_MAX_LEN = 12
 
 export interface Settings {
   enabled: boolean
@@ -94,4 +106,6 @@ export interface QuestionInput {
   content: string
   answer: string
   analysis: string
+  /** v1.2 标签；缺省视为空数组 */
+  tags?: string[]
 }

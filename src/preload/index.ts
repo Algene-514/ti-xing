@@ -2,12 +2,13 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { TixingApi } from '../shared/api'
 
 const api: TixingApi = {
-  list: (filter, q) => ipcRenderer.invoke('db:list', filter, q),
+  list: (filter, q, tag) => ipcRenderer.invoke('db:list', filter, q, tag ?? null),
   get: (id) => ipcRenderer.invoke('db:get', id),
   create: (input) => ipcRenderer.invoke('db:create', input),
   update: (id, input) => ipcRenderer.invoke('db:update', id, input),
   remove: (id) => ipcRenderer.invoke('db:remove', id),
   importFiles: (files) => ipcRenderer.invoke('db:import', files),
+  tags: () => ipcRenderer.invoke('db:tags'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
   status: () => ipcRenderer.invoke('app:status'),

@@ -123,14 +123,14 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
-  bootstrap()
+  await bootstrap()
 }).catch((e: unknown) => {
   log('bootstrap failed', e instanceof Error ? e.message : String(e))
   dialog.showErrorBox('题醒启动失败', e instanceof Error ? e.message : String(e))
   app.quit()
 })
 
-function bootstrap(): void {
+async function bootstrap(): Promise<void> {
   log('bootstrap start, os', process.platform, process.getSystemVersion())
   app.setAppUserModelId(APP_ID)
   Menu.setApplicationMenu(
@@ -142,6 +142,7 @@ function bootstrap(): void {
   log('creating store at', dbFilePath())
   store = new Store(dbFilePath())
   log('store ready')
+  await ensureV2Migration()
   registerIpc()
   log('ipc registered')
   createTray()
@@ -187,6 +188,47 @@ function bootstrap(): void {
 function dbFilePath(): string {
   if (process.env.TIXING_DB_PATH) return process.env.TIXING_DB_PATH
   return join(app.getPath('userData'), 'ti-xing.db')
+}
+
+// ---------- v1.2 §4：user_version 1 → 2（先备份，备份失败则中止迁移） ----------
+
+async function ensureV2Migration(): Promise<void> {
+  if (!store) return
+  const version = store.getUserVersion()
+  if (version >= 2) return
+  if (version !== 1) {
+    log('unexpected user_version, skip v2 migration:', version)
+    return
+  }
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+  const backupPath = join(app.getPath('userData'), `ti-xing-backup-v2-${stamp}.db`)
+  try {
+    await store.backup(backupPath) // WAL 下必须走 API，裸拷 .db 会漏掉已提交事务
+    log('v2 backup ok:', backupPath)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    log('v2 migration aborted: backup failed', msg)
+    void dialog.showMessageBox({
+      type: 'error',
+      message: '标签库升级未完成',
+      detail: `升级前备份失败，已中止迁移（题库与复习记录不受影响，下次启动会重试）。\n\n${msg}`,
+      buttons: ['好']
+    })
+    return
+  }
+  try {
+    store.migrateToV2()
+    log('migrated to user_version = 2')
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    log('v2 migration failed', msg)
+    void dialog.showMessageBox({
+      type: 'error',
+      message: '标签库升级失败',
+      detail: `建表失败，数据库保持 user_version = 1。\n\n${msg}`,
+      buttons: ['好']
+    })
+  }
 }
 
 // ---------- 窗口 ----------
@@ -656,13 +698,10 @@ function errorCode(e: unknown): string {
 }
 
 function registerIpc(): void {
-  ipcMain.handle('db:list', (_e, filter: FilterKey, q: string) =>
-    wrap(() => store!.list(filter ?? 'all', q ?? '', Date.now()))
+  ipcMain.handle('db:list', (_e, filter: FilterKey, q: string, tag?: string | null) =>
+    wrap(() => store!.list(filter ?? 'all', q ?? '', Date.now(), tag ?? null))
   )
-  ipcMain.handle('db:get', (_e, id: number) => {
-    const row = store!.getRow(id)
-    return wrap(() => (row ? toView(row, Date.now()) : null))
-  })
+  ipcMain.handle('db:get', (_e, id: number) => wrap(() => store!.getView(id, Date.now())))
   ipcMain.handle('db:create', (_e, input: QuestionInput) => wrap(() => store!.create(input, Date.now())))
   ipcMain.handle('db:update', (_e, id: number, input: QuestionInput) =>
     wrap(() => {
@@ -677,6 +716,7 @@ function registerIpc(): void {
     })
   )
   ipcMain.handle('db:import', (_e, files: ImportFile[]) => wrap(() => store!.importFiles(files ?? [], Date.now())))
+  ipcMain.handle('db:tags', () => wrap(() => store!.getTags()))
 
   ipcMain.handle('settings:get', () => wrap(() => store!.getSettings()))
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) =>

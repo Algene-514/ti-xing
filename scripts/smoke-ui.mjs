@@ -65,6 +65,16 @@ try {
   if (!page) throw new Error('没有找到页面 target：' + JSON.stringify(list))
   console.log('页面:', page.url)
 
+  // 页面 target 出现 ≠ React 已挂载：轮询等待 #root 有子节点（启动稍慢时避免误报白屏）
+  for (let i = 0; i < 20; i++) {
+    const mounted = await evaluate(
+      page.webSocketDebuggerUrl,
+      `(document.querySelector('#root')?.childElementCount ?? 0) > 0`
+    )
+    if (mounted) break
+    await sleep(500)
+  }
+
   const info = await evaluate(
     page.webSocketDebuggerUrl,
     `JSON.stringify({

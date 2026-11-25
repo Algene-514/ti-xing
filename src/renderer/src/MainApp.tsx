@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FilterKey, QuestionInput, QuestionView, Settings, StatusSnapshot } from '../../shared/types'
+import type {
+  FilterKey,
+  QuestionInput,
+  QuestionView,
+  Settings,
+  StatusSnapshot,
+  TagInfo
+} from '../../shared/types'
+import { TAG_MAX_LEN } from '../../shared/types'
 import { fmtDueLabel } from '../../shared/derive'
 
 type Mode = 'view' | 'edit' | 'new'
@@ -16,34 +24,65 @@ function msgOf(err: string): string {
   return err === 'DUPLICATE' ? '已有完全相同的题目' : err
 }
 
+/** v1.2 标签输入：中文/英文逗号分隔，trim 后去空 */
+function parseTagText(text: string): string[] {
+  return text
+    .split(/[,，]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+/** 超过 TAG_MAX_LEN 个字符的标签截断（UI 层负责提示） */
+function clipTag(tag: string): string {
+  const chars = Array.from(tag)
+  return chars.length > TAG_MAX_LEN ? chars.slice(0, TAG_MAX_LEN).join('') : tag
+}
+
 export default function MainApp(): JSX.Element {
   const [rows, setRows] = useState<QuestionView[]>([])
+  /** 搜索框里的原始输入（未防抖） */
+  const [queryInput, setQueryInput] = useState('')
+  /** 防抖 200ms 后真正用于查询的串 */
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<FilterKey>('all')
+  /** v1.2 单选标签筛选；null = 不筛 */
+  const [tagFilter, setTagFilter] = useState<string | null>(null)
+  const [tags, setTags] = useState<TagInfo[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [mode, setMode] = useState<Mode>('view')
   const [form, setForm] = useState<QuestionInput>(EMPTY_FORM)
+  /** 编辑表单里的标签文本（逗号分隔） */
+  const [tagText, setTagText] = useState('')
   const [settings, setSettings] = useState<Settings | null>(null)
   const [snap, setSnap] = useState<StatusSnapshot | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [dndOpen, setDndOpen] = useState(false)
 
+  const searchRef = useRef<HTMLInputElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const dirRef = useRef<HTMLInputElement>(null)
 
   const selected = useMemo(() => rows.find((r) => r.id === selectedId) ?? null, [rows, selectedId])
 
+  // v1.2 §3.2：200ms 防抖，避免每次按键都查库
+  useEffect(() => {
+    const t = setTimeout(() => setQuery(queryInput.trim()), 200)
+    return () => clearTimeout(t)
+  }, [queryInput])
+
   const refresh = useCallback(async () => {
-    const [listRes, statusRes, settingsRes] = await Promise.all([
-      window.tixing.list(filter, query),
+    const [listRes, statusRes, settingsRes, tagsRes] = await Promise.all([
+      window.tixing.list(filter, query, tagFilter),
       window.tixing.status(),
-      window.tixing.getSettings()
+      window.tixing.getSettings(),
+      window.tixing.tags()
     ])
     if (listRes.ok) setRows(listRes.data)
     if (statusRes.ok) setSnap(statusRes.data)
     if (settingsRes.ok) setSettings(settingsRes.data)
-  }, [filter, query])
+    if (tagsRes.ok) setTags(tagsRes.data)
+  }, [filter, query, tagFilter])
 
   useEffect(() => {
     void refresh()
@@ -55,6 +94,13 @@ export default function MainApp(): JSX.Element {
     }, 15_000)
     return () => clearInterval(t)
   }, [refresh])
+
+  // 正在筛的标签被删光（只剩 0 道题）时自动退出筛选，否则会永远筛不到
+  useEffect(() => {
+    if (tagFilter && tags.length > 0 && !tags.some((t) => t.name === tagFilter)) {
+      setTagFilter(null)
+    }
+  }, [tagFilter, tags])
 
   useEffect(() => {
     if (dirRef.current) {
@@ -69,6 +115,32 @@ export default function MainApp(): JSX.Element {
     return () => clearTimeout(t)
   }, [toast])
 
+  // v1.2 §3.3 快捷键：只在主窗口生效（复习弹窗是独立窗口，天然收不到），不注册全局快捷键
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      if (e.isComposing) return // 中文输入法组合中不处理
+      const mod = e.ctrlKey || e.metaKey
+      if (mod && e.code === 'KeyF') {
+        e.preventDefault()
+        searchRef.current?.focus()
+        return
+      }
+      if (mod && e.code === 'KeyN') {
+        e.preventDefault()
+        if (mode === 'view') startNew() // 编辑态不覆盖正在编辑的内容
+        return
+      }
+      // Esc 只在焦点位于搜索框时清空搜索；在题目/答案/解析框内不响应
+      if (e.code === 'Escape' && e.target === searchRef.current) {
+        e.preventDefault()
+        setQueryInput('')
+        setQuery('')
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [mode])
+
   async function patch(p: Partial<Settings>): Promise<void> {
     const r = await window.tixing.setSettings(p)
     if (r.ok) setSettings(r.data)
@@ -79,12 +151,18 @@ export default function MainApp(): JSX.Element {
     setMode('new')
     setSelectedId(null)
     setForm(EMPTY_FORM)
+    setTagText('')
   }
 
   function startEdit(): void {
     if (!selected) return
     setMode('edit')
     setForm({ content: selected.content, answer: selected.answer, analysis: selected.analysis ?? '' })
+    setTagText(selected.tags.join(', '))
+  }
+
+  function cancelForm(): void {
+    setMode('view')
   }
 
   async function save(): Promise<void> {
@@ -92,18 +170,23 @@ export default function MainApp(): JSX.Element {
       setToast('题目不能为空')
       return
     }
+    const rawTags = parseTagText(tagText)
+    const truncated = rawTags.some((t) => Array.from(t).length > TAG_MAX_LEN)
+    const tagsToSave = rawTags.map(clipTag)
+    const payload: QuestionInput = { ...form, tags: tagsToSave }
+
     if (mode === 'edit' && selectedId != null) {
-      const r = await window.tixing.update(selectedId, form)
+      const r = await window.tixing.update(selectedId, payload)
       if (!r.ok) {
         setToast(msgOf(r.error))
         return
       }
       setMode('view')
       await refresh()
-      setToast('已保存')
+      setToast(truncated ? '已保存（超长标签名已截断为 12 字）' : '已保存')
       return
     }
-    const r = await window.tixing.create(form)
+    const r = await window.tixing.create(payload)
     if (!r.ok) {
       setToast(msgOf(r.error))
       return
@@ -111,7 +194,7 @@ export default function MainApp(): JSX.Element {
     setSelectedId(r.data)
     setMode('view')
     await refresh()
-    setToast('已新建')
+    setToast(truncated ? '已新建（超长标签名已截断为 12 字）' : '已新建')
   }
 
   async function removeSelected(): Promise<void> {
@@ -276,10 +359,11 @@ export default function MainApp(): JSX.Element {
       <div className="layout">
         <aside className="list-pane">
           <input
+            ref={searchRef}
             className="search"
-            placeholder="搜索题目 / 答案"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索题目 / 答案 / 解析 / 标签"
+            value={queryInput}
+            onChange={(e) => setQueryInput(e.target.value)}
           />
           <div className="chips">
             {FILTERS.map((f) => (
@@ -292,6 +376,22 @@ export default function MainApp(): JSX.Element {
               </button>
             ))}
           </div>
+
+          {tags.length > 0 && (
+            <select
+              className="tag-filter"
+              value={tagFilter ?? ''}
+              onChange={(e) => setTagFilter(e.target.value || null)}
+              title="按标签筛选（单选）"
+            >
+              <option value="">全部标签</option>
+              {tags.map((t) => (
+                <option key={t.id} value={t.name}>
+                  {t.name}（{t.count}）
+                </option>
+              ))}
+            </select>
+          )}
 
           <div className="rows">
             {rows.length === 0 && <div className="empty small-pad">{emptyHint}</div>}
@@ -312,11 +412,29 @@ export default function MainApp(): JSX.Element {
                   复习 {r.n} 次
                   {r.r != null && ` · S=${r.s.toFixed(1)} 天 · R=${r.r.toFixed(2)}`}
                 </div>
+                {r.tags.length > 0 && (
+                  <div className="row-tags">
+                    {r.tags.slice(0, 3).map((t) => (
+                      <span key={t} className="tag">
+                        {t}
+                      </span>
+                    ))}
+                    {r.tags.length > 3 && <span className="tag tag-more">+{r.tags.length - 3}</span>}
+                  </div>
+                )}
               </button>
             ))}
           </div>
 
           <div className="list-actions">
+            <button
+              className="ghost"
+              onClick={startNew}
+              disabled={mode !== 'view' || busy}
+              title={mode !== 'view' ? '先保存或取消当前编辑' : '新建题目（Ctrl+N）'}
+            >
+              + 新建
+            </button>
             <button className="ghost" onClick={() => fileRef.current?.click()} disabled={busy}>
               导入 .md 文件
             </button>
@@ -347,6 +465,18 @@ export default function MainApp(): JSX.Element {
               <pre className="block">{selected.answer || '（空）'}</pre>
               <h3>解析</h3>
               <pre className="block">{selected.analysis || '（无）'}</pre>
+              {selected.tags.length > 0 && (
+                <>
+                  <h3>标签</h3>
+                  <div className="row-tags">
+                    {selected.tags.map((t) => (
+                      <span key={t} className="tag">
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
             </>
           )}
 
@@ -386,11 +516,18 @@ export default function MainApp(): JSX.Element {
                 onChange={(e) => setForm({ ...form, analysis: e.target.value })}
                 placeholder="可为空"
               />
+              <h3>标签</h3>
+              <input
+                className="tag-input"
+                value={tagText}
+                onChange={(e) => setTagText(e.target.value)}
+                placeholder="逗号分隔，如：高数, 极限（每个不超过 12 字）"
+              />
               <div className="actions">
                 <button className="primary" type="submit">
                   保存
                 </button>
-                <button className="ghost" type="button" onClick={() => setMode('view')}>
+                <button className="ghost" type="button" onClick={cancelForm}>
                   取消
                 </button>
               </div>

@@ -48,7 +48,8 @@ export function toView(q: QuestionRow, now: number): QuestionView {
     status: statusOf(q, now),
     r: rOf(q, now),
     daysOverdue: daysOverdue(q, now),
-    daysToDue: daysToDue(q, now)
+    daysToDue: daysToDue(q, now),
+    tags: [] // 由 Store 按需填充（toView 不碰数据库）
   }
 }
 

@@ -1,4 +1,4 @@
-// 验证打包产物：连上指定 CDP 端口，确认主窗口渲染且带 v1.1 的 ⏰ 入口
+// 验证打包产物：连上指定 CDP 端口，确认主窗口渲染且带 v1.2 的标签/新建入口
 // 用法: node scripts/verify-packaged.mjs 9447
 const port = process.argv[2] || '9447'
 
@@ -13,7 +13,9 @@ const expr = `JSON.stringify({
   dndBtn: !!document.querySelector('.dnd-btn'),
   status: (document.querySelector('.stat')?.textContent || '').trim(),
   topControls: document.querySelectorAll('.ctl').length,
-  title: document.title
+  title: document.title,
+  hasTagsApi: typeof window.tixing?.tags === 'function',
+  newBtn: [...document.querySelectorAll('.list-actions button')].some((b) => (b.textContent || '').includes('新建'))
 })`
 
 const value = await new Promise((resolve, reject) => {
@@ -37,8 +39,10 @@ const value = await new Promise((resolve, reject) => {
 const info = JSON.parse(value)
 console.log('title        :', info.title)
 console.log('顶栏控件数   :', info.topControls)
-console.log('v1.1 ⏰ 入口 :', info.dndBtn)
+console.log('免打扰入口   :', info.dndBtn)
+console.log('tags API     :', info.hasTagsApi)
+console.log('独立新建按钮 :', info.newBtn)
 console.log('状态栏       :', info.status)
-const ok = info.dndBtn === true && info.topControls === 4
-console.log(ok ? '\n✅ 打包产物是 v1.1.0（含免打扰入口）' : '\n❌ 打包产物看起来还是旧版本')
+const ok = info.dndBtn === true && info.topControls === 4 && info.hasTagsApi === true && info.newBtn === true
+console.log(ok ? '\n✅ 打包产物是 v1.2（含标签 API 与独立新建入口）' : '\n❌ 打包产物看起来不是 v1.2')
 process.exit(ok ? 0 : 1)
