@@ -38,6 +38,14 @@
 | 标签与搜索 | 标签（逗号输入、列表前 3 折叠 +N、单选筛选）；LIKE 搜索题干 / 答案 / 解析 / 标签名，多词 AND |
 | 导入 | `.md` / `.txt` 单文件或整个文件夹；多题块切分；事务导入；按题干去重 |
 
+### 主窗口快捷键
+
+| 按键 | 动作 |
+|---|---|
+| `Ctrl/Cmd+F` | 聚焦搜索框 |
+| `Ctrl/Cmd+N` | 新建题目（编辑态不覆盖，需先保存或取消） |
+| `Esc` | 清空搜索（焦点在搜索框内时） |
+
 ### 弹窗快捷键
 
 | 按键 | 动作 |
@@ -168,7 +176,7 @@ src/
 ├─ preload/   contextBridge → window.tixing
 ├─ renderer/  MainApp.tsx（主窗口）QuizApp.tsx（全屏弹窗）styles.css
 └─ shared/    srs.ts / dnd.ts / derive.ts / md.ts（纯函数，可独立测试）
-test/         srs（16）+ dnd（9）+ core（15，真实 SQLite）
+test/         srs（16）+ dnd（9）+ core（20，真实 SQLite）
 scripts/      冒烟（25 条行为断言）、预编译包、图标、打包核验
 ```
 
@@ -177,12 +185,13 @@ scripts/      冒烟（25 条行为断言）、预编译包、图标、打包核
 ```bash
 npm run test:srs    # 16 条：公式、常量、8 连对序列、间隔截断
 npm run test:dnd    # 9 条：免打扰（重点跨午夜）
-npm run test:core   # 15 条：真实 SQLite 集成（调度/评分/日志/导入去重）
+npm run test:core   # 20 条：真实 SQLite 集成（调度/评分/日志/导入去重/标签/迁移）
 npm test            # 以上全部
 node scripts/smoke-v11.mjs  # 25 条界面行为断言（需开发版窗口 + CDP）
+node scripts/smoke-v12.mjs  # 17 条：标签/搜索/快捷键/新建入口（需开发版窗口 + CDP）
 ```
 
-合计 65 条断言。其中 `test:core` 通过 esbuild 打包后用 Electron 的 Node 运行（better-sqlite3 编译的是 Electron ABI）。
+合计 45 条单元/集成断言 + 42 条界面冒烟断言（smoke-v11 25 + smoke-v12 17）。其中 `test:core` 通过 esbuild 打包后用 Electron 的 Node 运行（better-sqlite3 编译的是 Electron ABI）。
 
 ## 打包
 
@@ -216,7 +225,7 @@ $env:CSC_IDENTITY_AUTO_DISCOVERY = 'false'
 | v1.0 MVP | ✅ | 调度 / 主窗口 / 全屏弹窗 / 托盘 / 导入 / 备份恢复 / 打包 |
 | v1.1.0 | ✅ | 3 秒提示条、免打扰时段 |
 | v1.1.1 | ✅ | 稍后 10 分钟、积压单批扩容、间隔上限 180 天 |
-| **v1.2** | 🧪 待验收 | 标签（最小版）、标签筛选、LIKE 搜索增强、窗口内快捷键、独立新建入口 |
+| **v1.2** | ✅ | 标签（最小版）、标签筛选、LIKE 搜索增强、窗口内快捷键、独立新建入口 |
 | 录题包 | 🧭 顺延 | Obsidian 完整导入（frontmatter / 图片 / 导入预览）+ KaTeX 公式渲染（原 v1.1.2，等真实痛点再立项） |
 
 **明确不做**（防止功能膨胀，写下来就不加了）：统计图表 / 遗忘曲线、云同步与多设备、AI 出题、富文本编辑器、主题皮肤、连续天数与成就系统——这是刷题 App 的性格，不是题醒的。
